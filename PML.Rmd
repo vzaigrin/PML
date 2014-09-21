@@ -1,0 +1,174 @@
+---
+title: "Activity Prediction"
+author: "Vadim Zaigrin"
+output:
+  html_document:
+    keep_md: yes
+---
+
+## Synopsis
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+## Load and Clean Data
+
+The data for this project comes from this source: http://groupware.les.inf.puc-rio.br/har.
+
+* Load data.
+
+```{r,results='markup'}
+file1<-"pml-training.csv"; url1<-"http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+file2<-"pml-testing.csv"; url2<-"http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if ( !file.exists(file1) )  download.file(url1,destfile=file1)
+if ( !file.exists(file2) )  download.file(url2,destfile=file2)
+
+train.orig<-read.csv(file1)
+test.orig<-read.csv(file2)
+```
+
+* Examine data
+
+```{r}
+str(train.orig)
+dim(train.orig)
+dim(test.orig)
+```
+
+We need to remove empty data and to reduce the number of prediction variables.
+
++ Mark the empty data as NA
+
+```{r}
+for(i in 1:dim(train.orig)[2] ) train.orig[train.orig[,i] %in% c("","#DIV/0!"),i]<-NA
+for(i in 1:dim(test.orig)[2] )  test.orig[test.orig[,i] %in% c("","#DIV/0!"),i]<-NA
+```
+ 
++ Remove variables with NA data.
+
+```{r}
+train<-train.orig[,colSums(is.na(train.orig))==0]
+test<-test.orig[,colSums(is.na(test.orig))==0]
+```
+
++ Remove variables not relevant to the outcome.
+
+```{r}
+train<-subset(train,select=-c(X,user_name,raw_timestamp_part_1,raw_timestamp_part_2,
+                              cvtd_timestamp,new_window,num_window))
+dim(train)
+
+test<-subset(test,select=-c(X,user_name,raw_timestamp_part_1,raw_timestamp_part_2,
+                            cvtd_timestamp,new_window,num_window))
+dim(test)
+```
+
+## Data Pre-Processing
+
+1. Separate outcome and predictors
+
+```{r}
+outcome<-train$classe
+predictors<-train[,-(which(names(train) %in% "classe"))]
+```
+
+2. Separate training data for cross-validation.
+
+```{r,message=FALSE,warning=FALSE}
+library("caret")
+set.seed(12345)
+inTrain<-createDataPartition(outcome,p=0.8,list=FALSE)
+training<-predictors[inTrain,]
+validation<-predictors[-inTrain,]
+trainClass<-outcome[inTrain]
+validClass<-outcome[-inTrain]
+```
+
+3. Check for zero- and near zero-variance predictors
+
+There are many models where predictors with a single unique value (also known as "zero-variance predictors") will cause the model to fail. Since we will be tuning models using resampling methods, a random sample of the training set may result in some predictors with more than one unique value to become a zero-variance predictor. These so-called "near zero-variance predictors" can cause numerical problems during resampling for some models.
+
+```{r}
+nearZeroVar(training,saveMetrics=TRUE)
+```
+
+There are no zero- and near zero-variance predictors
+
+4. Identify and remove correlated predictors
+
+Some models are susceptible to multicollinearity (high correlations between predictors). We can compute the correlation matrix of the predictors and use special algorithm to remove a subset of the predictors with the high pairwise correlations.
+
+```{r}
+cor.mat<-cor(training)
+
+library("corrplot")
+corrplot(cor.mat,tl.cex=0.5)
+
+cor.high<-findCorrelation(cor.mat,cutoff=0.8)
+training<-training[,-cor.high]
+validation<-validation[,-cor.high]
+cor.mat2<-cor(training)
+summary(cor.mat2[upper.tri(cor.mat2)])
+```
+
+## Selecting Prediction Model
+
+There are a lot of models available. (See here: http://topepo.github.io/caret/modelList.html)
+
+I will use two of them. I don't have enough time to compute a lot of models and compare its results.
+
+### Prediction with trees
+
+Decision tree learning uses a decision tree as a predictive model which maps observations about an item to conclusions about the item's target value.
+
+```{r,message=FALSE}
+modFit1<-train(training,trainClass,method="rpart")
+modFit1
+library("rattle")
+fancyRpartPlot(modFit1$finalModel,sub="")
+```
+
+Validation
+
+```{r}
+predict1<-predict(modFit1,newdata=validation)
+confusionMatrix(predict1,validClass)
+valid1<-round(confusionMatrix(predict1,validClass)$overall,2)
+```
+
+### Prediction with random forests
+
+Random forests are an ensemble learning method for classification and regression that operate by constructing a multitude of decision trees at training time and outputting the class that is the mode of the classes output by individual trees.
+
+```{r,message=FALSE}
+library("randomForest")
+modFit2<-randomForest(training,trainClass,importance=TRUE)
+modFit2
+plot(modFit2)
+```
+
+Validation
+
+```{r}
+predict2<-predict(modFit2,newdata=validation)
+confusionMatrix(predict2,validClass)
+valid2<-round(confusionMatrix(predict2,validClass)$overall,2)
+```
+
+### Comparison models
+
+```{r}
+as.data.frame(cbind(c("Decision tree","Random Forest"),rbind(valid1,valid2,deparse.level=0)))
+```
+
+As we see "Random Forest" model shows better results than "Decision tree" model.
+
+## Prediction
+
+It's time now to predict our testing data set.
+
+```{r}
+predict(modFit2,newdata=test)
+```
